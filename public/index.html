@@ -1,0 +1,1083 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Movie Score</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      background: #111;
+      color: #eee;
+      font-family: system-ui, sans-serif;
+      overflow: hidden;
+    }
+
+    #app {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #scoreViewport {
+      position: relative;
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+      background: #000;
+    }
+
+    #score {
+      position: absolute;
+      left: 0;
+      top: 0;
+
+      /*
+        The score is always scaled vertically to exactly fill
+        the available score viewport height.
+      */
+      height: 100%;
+      width: auto;
+      max-width: none;
+
+      user-select: none;
+      pointer-events: none;
+
+      transform: translate3d(200px, 0, 0);
+      transform-origin: top left;
+    }
+
+    /*
+      Fixed playhead position.
+    */
+    #playhead {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 200px;
+      width: 2px;
+
+      background: #ff3b30;
+      box-shadow: 0 0 5px #000;
+
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    #ui {
+      height: 38px;
+      flex: 0 0 38px;
+
+      display: flex;
+      align-items: center;
+      gap: 8px;
+
+      padding: 0 10px;
+
+      background: #202020;
+      font-size: 13px;
+    }
+
+    button {
+      height: 28px;
+      min-width: 60px;
+
+      border: 1px solid #555;
+      border-radius: 4px;
+
+      background: #303030;
+      color: #eee;
+
+      cursor: pointer;
+    }
+
+    button:disabled {
+      opacity: 0.4;
+      cursor: default;
+    }
+
+    #seek {
+      flex: 1;
+      min-width: 100px;
+    }
+
+    #status {
+      white-space: nowrap;
+      color: #aaa;
+    }
+
+    #time {
+      font-variant-numeric: tabular-nums;
+      width: 105px;
+      text-align: right;
+    }
+
+    #role {
+      width: 55px;
+    }
+
+    .bad {
+      color: #ff8a80 !important;
+    }
+
+    .good {
+      color: #9be7a5 !important;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div id="app">
+
+    <div id="scoreViewport">
+
+      <img id="score" src="score.png" alt="Graphic score">
+
+      <div id="playhead"></div>
+
+    </div>
+
+
+    <div id="ui">
+
+      <span id="role">
+        PLAYER
+      </span>
+
+      <button id="play" disabled>
+        PLAY
+      </button>
+
+      <button id="pause" disabled>
+        PAUSE
+      </button>
+
+      <button id="stop" disabled>
+        STOP
+      </button>
+
+      <input id="seek" type="range" min="0" max="0" step="1" value="0" disabled aria-label="Movie position">
+
+      <span id="time">
+        00:00.000
+      </span>
+
+      <span id="status">
+        Connecting…
+      </span>
+
+    </div>
+
+  </div>
+
+
+  <script>
+
+    /*
+      ============================================================
+      CONFIGURATION
+      ============================================================
+    */
+
+    /*
+      Canonical score coordinate system.
+
+      Score:
+        16076 × 730 px
+
+      Film:
+        4019 seconds
+
+      Therefore:
+        4019 × 4 = 16076
+
+      So:
+        scoreX = movieTime × 4
+    */
+
+    const PIXELS_PER_SECOND = 4;
+
+
+    /*
+      Fixed playhead position.
+    */
+
+    const PLAYHEAD_X = 200;
+
+
+    /*
+      ============================================================
+      CONNECTION
+      ============================================================
+    */
+
+    const isMaster =
+      new URLSearchParams(location.search).get('master') === '1';
+
+
+    const wsProtocol =
+      location.protocol === 'https:'
+        ? 'wss:'
+        : 'ws:';
+
+
+    const ws =
+      new WebSocket(
+        `${wsProtocol}//${location.host}${isMaster ? '/?master=1' : '/'}`
+      );
+
+
+    /*
+      ============================================================
+      DOM
+      ============================================================
+    */
+
+    const score =
+      document.getElementById('score');
+
+    const viewport =
+      document.getElementById('scoreViewport');
+
+    const play =
+      document.getElementById('play');
+
+    const pause =
+      document.getElementById('pause');
+
+    const stop =
+      document.getElementById('stop');
+
+    const seek =
+      document.getElementById('seek');
+
+    const status =
+      document.getElementById('status');
+
+    const timeLabel =
+      document.getElementById('time');
+
+    const role =
+      document.getElementById('role');
+
+
+    /*
+      ============================================================
+      STATE
+      ============================================================
+    */
+
+    let state = {
+
+      connectedToVlc: false,
+
+      playing: false,
+
+      time: 0,
+
+      vlcTime: 0,
+
+      position: 0,
+
+      length: 0,
+
+      rate: 1,
+
+      title: ''
+    };
+
+
+    /*
+      Slider state.
+    */
+
+    let sliderWasPlaying = false;
+
+    let sliderDragging = false;
+
+
+    /*
+      ============================================================
+      TIMING
+      ============================================================
+    */
+
+    /*
+      Time at which the most recent server/VLC state packet
+      arrived.
+
+      VLC/server only needs to send timing updates periodically.
+      The browser interpolates between those updates at the
+      display frame rate.
+    */
+
+    let lastPacketAt =
+      performance.now();
+
+
+    /*
+      Last position actually rendered.
+
+      Used only to prevent tiny backwards movements caused by
+      timing jitter in VLC/server updates.
+
+      Deliberate seeks reset this naturally because the browser
+      receives the new VLC time.
+    */
+
+    let lastRenderedTime = 0;
+
+
+    /*
+      ============================================================
+      ROLE
+      ============================================================
+    */
+
+    role.textContent =
+      isMaster
+        ? 'MASTER'
+        : 'PLAYER';
+
+
+    /*
+      ============================================================
+      TIME FORMATTING
+      ============================================================
+    */
+
+    function fmt(sec) {
+
+      sec =
+        Math.max(
+          0,
+          Number(sec) || 0
+        );
+
+
+      const h =
+        Math.floor(
+          sec / 3600
+        );
+
+
+      const m =
+        Math.floor(
+          (sec % 3600) / 60
+        );
+
+
+      const s =
+        Math.floor(
+          sec % 60
+        );
+
+
+      const ms =
+        Math.floor(
+          (
+            sec -
+            Math.floor(sec)
+          ) * 1000
+        );
+
+
+      return (
+
+        `${h
+          ? String(h).padStart(2, '0') + ':'
+          : ''}` +
+
+        `${String(m).padStart(2, '0')}:` +
+
+        `${String(s).padStart(2, '0')}.` +
+
+        `${String(ms).padStart(3, '0')}`
+      );
+    }
+
+
+    /*
+      ============================================================
+      SCORE RENDERING
+      ============================================================
+    */
+
+    function render(t) {
+
+      /*
+        Sanitize time.
+      */
+
+      t =
+        Math.max(
+          0,
+          Number(t) || 0
+        );
+
+
+      /*
+        Optional:
+        While playing, never allow a tiny timing correction from
+        VLC to make the score move backwards.
+      */
+      
+          /*delte line to enable "prevent backwards". Probably only relevant on performance day
+
+      if (state.playing) {
+
+        t =
+          Math.max(
+            t,
+            lastRenderedTime
+          );
+      }
+
+      lastRenderedTime =
+        t;
+
+          */
+
+      const movieTime =
+        Math.max(
+          0,
+          Number(t) || 0
+        );
+
+      
+
+      /*
+        Convert movie time into canonical score coordinates.
+      */
+
+      const scoreX =
+        movieTime *
+        PIXELS_PER_SECOND;
+
+
+      /*
+        Scale the artwork vertically to the available viewport.
+      */
+
+      const scale =
+        score.naturalHeight > 0
+
+          ? viewport.clientHeight /
+          score.naturalHeight
+
+          : 1;
+
+
+      /*
+        Position the score so that the coordinate corresponding
+        to the current movie time sits underneath the playhead.
+      */
+
+      const imageX =
+        PLAYHEAD_X -
+        scoreX * scale;
+
+
+      score.style.transform =
+        `translate3d(${imageX}px, 0, 0)`;
+
+
+      /*
+        Update time display.
+      */
+
+      timeLabel.textContent =
+        fmt(movieTime);
+
+
+      /*
+        Keep the master slider synchronized with the displayed
+        movie position, unless the user is actively dragging it.
+      */
+
+      if (
+
+        isMaster &&
+
+        state.length > 0 &&
+
+        !sliderDragging
+
+      ) {
+
+        seek.value =
+          Math.max(
+            0,
+            Math.min(
+              state.length,
+              movieTime
+            )
+          );
+      }
+    }
+
+
+    /*
+      ============================================================
+      CONTROLS
+      ============================================================
+    */
+
+    function updateControls() {
+
+      const enabled =
+        isMaster &&
+
+        ws.readyState ===
+        WebSocket.OPEN &&
+
+        state.connectedToVlc;
+
+
+      play.disabled =
+        !enabled;
+
+
+      pause.disabled =
+        !enabled;
+
+
+      stop.disabled =
+        !enabled;
+
+
+      seek.disabled =
+        !enabled ||
+        !state.length;
+
+
+      /*
+        Status display.
+      */
+
+      if (
+        !state.connectedToVlc
+      ) {
+
+        status.textContent =
+          'VLC OFFLINE';
+
+        status.className =
+          'bad';
+
+      } else if (
+        state.playing
+      ) {
+
+        status.textContent =
+          'PLAYING';
+
+        status.className =
+          'good';
+
+      } else {
+
+        status.textContent =
+          'STOPPED/PAUSED';
+
+        status.className =
+          'good';
+      }
+    }
+
+
+    /*
+      ============================================================
+      WEBSOCKET EVENTS
+      ============================================================
+    */
+
+    ws.addEventListener(
+      'open',
+      () => {
+
+        status.textContent =
+          'Connected';
+
+        updateControls();
+      }
+    );
+
+
+    ws.addEventListener(
+      'close',
+      () => {
+
+        status.textContent =
+          'Server disconnected';
+
+        status.className =
+          'bad';
+
+        updateControls();
+      }
+    );
+
+
+    ws.addEventListener(
+      'message',
+      event => {
+
+        let msg;
+
+
+        try {
+
+          msg =
+            JSON.parse(
+              event.data
+            );
+
+        } catch {
+
+          return;
+        }
+
+
+        /*
+          Initial connection or VLC state update.
+        */
+
+        if (
+
+          msg.type === 'hello' ||
+
+          msg.type === 'state'
+
+        ) {
+
+          /*console.log(
+            'STATE FROM SERVER:',
+            'time=', msg.time,
+            'vlcTime=', msg.vlcTime,
+            'position=', msg.position,
+            'length=', msg.length
+          );*/
+
+
+          /*
+            Update state.
+
+            IMPORTANT:
+            We do NOT call render() here.
+
+            The animation loop is solely responsible for rendering.
+          */
+
+          state = {
+            ...state,
+            ...msg
+          };
+
+
+          /*
+            Establish a new timing anchor.
+
+            The animation loop will extrapolate from state.time
+            until the next packet arrives.
+          */
+
+          lastPacketAt =
+            performance.now();
+
+
+          /*
+            Update slider duration.
+          */
+
+          if (
+
+            state.length &&
+
+            Number.isFinite(
+              state.length
+            )
+
+          ) {
+
+            seek.max =
+              state.length;
+
+          }
+
+
+          updateControls();
+
+        }
+
+
+        /*
+          Server-side errors.
+        */
+
+        if (
+          msg.type === 'error'
+        ) {
+
+          alert(
+            msg.message
+          );
+        }
+      }
+    );
+
+
+    /*
+      ============================================================
+      MASTER COMMANDS
+      ============================================================
+    */
+
+    function command(
+      type,
+      extra = {}
+    ) {
+
+      if (
+        ws.readyState !==
+        WebSocket.OPEN
+      ) {
+        return;
+      }
+
+
+      ws.send(
+        JSON.stringify({
+          type,
+          ...extra
+        })
+      );
+    }
+
+
+    play.onclick =
+      () => {
+
+        command(
+          'play'
+        );
+      };
+
+
+    pause.onclick =
+      () => {
+
+        command(
+          'pause'
+        );
+      };
+
+
+    stop.onclick =
+      () => {
+
+        command(
+          'stop'
+        );
+      };
+
+
+    /*
+      ============================================================
+      SLIDER
+      ============================================================
+    */
+
+    seek.addEventListener(
+      'pointerdown',
+      event => {
+
+        if (
+          !isMaster ||
+          !state.length
+        ) {
+          return;
+        }
+
+
+        /*
+          Keep receiving the pointer even if the mouse moves
+          outside the slider while dragging.
+        */
+
+        try {
+          seek.setPointerCapture(
+            event.pointerId
+          );
+        } catch {
+          // Not all browsers require pointer capture.
+        }
+
+
+        sliderDragging =
+          true;
+
+
+        /*
+          Remember whether VLC was playing.
+        */
+
+        sliderWasPlaying =
+          state.playing;
+
+
+        /*
+          Pause while scrubbing.
+        */
+
+        if (
+          sliderWasPlaying
+        ) {
+
+          command(
+            'pause'
+          );
+        }
+      }
+    );
+
+
+    seek.addEventListener(
+      'input',
+      () => {
+
+        if (
+          !sliderDragging ||
+          !state.length
+        ) {
+          return;
+        }
+
+
+        /*
+          Slider value is an absolute number of seconds.
+        */
+
+        timeLabel.textContent =
+          fmt(
+            Number(
+              seek.value
+            )
+          );
+      }
+    );
+
+
+    seek.addEventListener(
+      'pointerup',
+      event => {
+
+        if (
+          !sliderDragging ||
+          !state.length
+        ) {
+          return;
+        }
+
+
+        const requestedTime =
+          Number(
+            seek.value
+          );
+
+
+        console.log(
+          'SLIDER SEEK:',
+          requestedTime,
+          'seconds'
+        );
+
+
+        sliderDragging =
+          false;
+
+
+        /*
+          Seek VLC using absolute seconds.
+        */
+
+        command(
+          'seek',
+          {
+            time:
+              requestedTime
+          }
+        );
+
+
+
+
+       
+
+        if (
+          sliderWasPlaying
+        ) {
+
+          command(
+            'play'
+          );
+        }
+        /*
+          Render the requested position immediately so the score
+          responds without waiting for the next VLC packet.
+        */
+
+        lastRenderedTime =
+          requestedTime;
+
+
+        render(
+          requestedTime
+        );
+      }
+    );
+
+
+    seek.addEventListener(
+      'pointercancel',
+      () => {
+
+        sliderDragging =
+          false;
+
+        sliderWasPlaying =
+          false;
+      }
+    );
+
+
+    /*
+      ============================================================
+      RESIZE
+      ============================================================
+    */
+
+    window.addEventListener(
+      'resize',
+      () => {
+
+        /*
+          The animation loop will continue using the current
+          timing state.
+
+          We only need to force a visual update here.
+        */
+
+        render(
+          state.time
+        );
+      }
+    );
+
+
+    /*
+      ============================================================
+      SMOOTH PLAYBACK
+      ============================================================
+    */
+
+    function animate() {
+
+      /*
+        Time since the most recent VLC/server packet.
+      */
+
+      const elapsed =
+        (
+          performance.now() -
+          lastPacketAt
+        ) / 1000;
+
+
+      /*
+        Predict the current movie time.
+
+        VLC/server provides the anchor.
+        requestAnimationFrame provides the smooth movement.
+      */
+
+      const predicted =
+        state.playing
+
+          ? state.time +
+          elapsed *
+          (state.rate || 1)
+
+          : state.time;
+
+
+      /*
+        Never render beyond the known movie duration.
+      */
+
+      const displayTime =
+        state.length
+
+          ? Math.min(
+            state.length,
+            predicted
+          )
+
+          : predicted;
+
+
+      /*
+        Render at browser frame rate.
+      */
+
+      render(
+        displayTime
+      );
+
+
+      requestAnimationFrame(
+        animate
+      );
+    }
+
+
+    /*
+      ============================================================
+      IMAGE INITIALISATION
+      ============================================================
+    */
+
+    score.addEventListener(
+      'load',
+      () => {
+
+        render(
+          state.time
+        );
+      }
+    );
+
+
+    /*
+      ============================================================
+      START ANIMATION
+      ============================================================
+    */
+
+    animate();
+
+  </script>
+
+</body>
+
+</html>
