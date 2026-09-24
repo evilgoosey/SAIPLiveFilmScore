@@ -71,7 +71,7 @@ Only the server communicates with VLC.
 The canonical score image is:
 
 ```text
-Width:   16076 px
+Width:   64304 px
 Height:    730 px
 ```
 
@@ -79,25 +79,13 @@ The film duration is:
 
 ```text
 4019 seconds
-66:59.000
+1:06:59.000
 ```
 
 The score uses a horizontal scale of:
 
 ```text
-4 pixels = 1 second
-```
-
-Therefore:
-
-```text
-4019 × 4 = 16076 pixels
-```
-
-A position in the film maps directly to a position on the score:
-
-```text
-scoreX = movieTime × 4
+16 pixels = 1 second
 ```
 
 ### Playhead
@@ -110,18 +98,6 @@ The playhead is fixed at:
 
 from the left edge of the score viewport.
 
-The score moves underneath it.
-
-```text
-                    fixed playhead
-                         │
-                         ▼
-        ┌────────────────┼─────────────────┐
-        │                │                 │
- SCORE ──────────────────┼──────────────────────
-        │                │                 │
-        └────────────────┴─────────────────┘
-```
 
 ---
 
@@ -163,33 +139,20 @@ VLC provides playback information through its HTTP interface.
 The server polls VLC approximately every:
 
 ```text
-100 ms
+42 ms (~24fps)
 ```
 
 The server distributes the current playback state to all connected browsers.
 
 The browser then uses `requestAnimationFrame()` to interpolate the displayed position between server updates.
 
-This prevents the score from being visually limited to the approximately 10 updates/second rate of the VLC polling loop.
-
-The browser prediction is based on:
-
-```javascript
-state.time +
-elapsed * state.rate
-```
-
-while VLC is playing.
-
----
-
 ## VLC
 
 VLC must be running with its HTTP interface enabled. 
 
-In VLC go to tools>preferences> show settings = all , and then to Main Interfaces> Tick the "web" box. 
-Then go to Main Interfaces>Lua and change Lua Interface to "http" (default is "dummy") and the password to "change-me" or whatever
-you have the password set to in server.js.
+   In VLC go to tools>preferences> show settings = all , and then to Main Interfaces> Tick the "web" box abd "Lua" box. 
+   Then go to Main Interfaces>Lua and change Lua Interface to "http" (default is "dummy") and the password to "change-me" or whatever
+      you have the password set to in server.js.
 
 The server expects VLC at:
 
@@ -250,7 +213,7 @@ The default server port is:
 The server listens on:
 
 ```text
-0.0.0.0
+localhost
 ```
 
 so that other devices on the local network can connect.
@@ -288,15 +251,7 @@ It only needs network access to the Node server.
 
 ## Master and Player Roles
 
-There is one master client.
-
-The master is opened with:
-
-```text
-/?master=1
-```
-
-For example:
+There is one master client who has play stop scrub controls:
 
 ```text
 http://192.168.1.100:3000/?master=1
@@ -308,96 +263,38 @@ All other clients are ordinary players:
 http://192.168.1.100:3000
 ```
 
-### Master
-
-The master can:
-
-- Play
-- Pause
-- Stop
-- Seek
-- Control the VLC playback position
-
-### Players
-
-Players:
+Non-Master Players:
 
 - Receive playback state
 - Display the synchronized score
 - Cannot control VLC
-- Cannot seek the master playback
+- Cannot seek/scrub the master playback
 
 If a second client attempts to connect as master while another master is already connected, it remains a player and receives an error message indicating that the master role is occupied.
 
 ---
 
-## Seeking
+When the slider is pressed:
 
-The master interface includes a timeline slider.
-
-The slider represents **absolute film time in seconds**.
-
-For example:
-
-```text
-0       = 00:00
-600     = 10:00
-1200    = 20:00
-2000    = 33:20
-4019    = 66:59
-```
-
-The slider uses whole-second increments.
-
-This is intentional because VLC's HTTP seek interface expects the value to be interpreted as a time value, and fractional slider values produced unreliable seeking behaviour.
+1. The master pauses playback if playing.
 
 When the slider is released:
 
-1. The master pauses playback if necessary.
 2. The requested time is sent to the server.
 3. The server sends the seek command to VLC.
-4. VLC changes position.
+4. VLC changes position and plays
 5. The resulting VLC state is distributed to all clients.
 
 ---
 
-## File Structure
 
-A minimal project looks like:
-
-```text
-project/
-│
-├── server.js
-├── package.json
-├── package-lock.json
-├── README.md
-│
-└── public/
-    ├── index.html
-    └── score.png
-```
-
-Additional assets can be placed in `public/` as required.
-
----
 
 ## Score Image
 
-The score image should retain its canonical dimensions:
+The score image MUST retain its canonical dimensions when altered or added to:
 
 ```text
-16076 × 730 px
-```
-
-Do not resize the score image to fit the browser window.
-
-The browser performs the vertical scaling automatically.
-
-The horizontal coordinate system remains based on:
-
-```text
-4 px / second
+64304 × 730 px
 ```
 
 Changing the physical dimensions of the source image will therefore change the relationship between the score and the film.
@@ -413,43 +310,19 @@ The canonical grid is:
 ### 10-second markers
 
 ```text
-40 px
+160 px
 ```
 
 ### 1-minute markers
 
 ```text
-240 px
+960 px
 ```
 
-### 10-minute markers
+### 10-minute markers and numbering:
 
 ```text
-2400 px
-```
-
-Major labels occur at:
-
-```text
-00:00
-10:00
-20:00
-30:00
-40:00
-50:00
-60:00
-```
-
-The final film position is:
-
-```text
-66:59
-```
-
-at:
-
-```text
-x = 16076 px
+9600 px
 ```
 
 ---
@@ -462,50 +335,13 @@ A composer can work directly with the full-resolution PNG.
 
 The important constraint is that horizontal position corresponds to film time:
 
-```text
-1 second   = 4 px
-10 seconds = 40 px
-1 minute   = 240 px
-10 minutes = 2400 px
-```
-
 This makes it possible to work visually with precise points in the film without requiring a conventional musical timeline.
-
-A timing grid can be added to the top of the score during composition and removed or hidden for performance if required.
-
----
-
-## Synchronization Model
-
-The film itself remains the authoritative clock.
-
-The server does not attempt to create a separate master clock.
-
-Instead:
-
-```text
-VLC
- ↓
-current playback state
- ↓
-Node server
- ↓
-WebSocket
- ↓
-browser clients
-```
-
-This means that if VLC is paused, the score stops.
-
-If VLC is moved to another position, the score follows.
-
-If VLC is playing, the browser score advances continuously.
 
 ---
 
 ## Network Requirements
 
-The system is intended for a local network.
+The system is intended for a local network. Be sure to allow ports through any firewall.
 
 All participating devices need to be able to reach the computer running the Node server on the configured port.
 
@@ -519,73 +355,5 @@ The server itself does not require internet access.
 
 A wired Ethernet network is also possible if the participating devices and network infrastructure support it.
 
----
 
-## Current Limitations
 
-This is a prototype system.
-
-Known characteristics include:
-
-- VLC must be running separately.
-- VLC must have its HTTP interface enabled.
-- The score is currently a raster image rather than a vector or dynamically generated score.
-- The system currently assumes a single film and corresponding score geometry.
-- There is one master client.
-- Player clients are read-only.
-- Synchronization depends on network latency and VLC polling.
-- Very large score images may place a significant rendering load on some mobile browsers.
-
-The browser renderer uses `requestAnimationFrame()` for smooth motion, but the perceived smoothness can still depend on the device's ability to continuously render and transform the large score image.
-
----
-
-## Development Notes
-
-The system intentionally avoids unnecessary dependencies.
-
-The server provides:
-
-- Static file serving
-- VLC communication
-- WebSocket communication
-- Master/client management
-
-The browser provides:
-
-- Score rendering
-- Playback display
-- Master controls
-- Timeline interaction
-
-This keeps the architecture relatively small and makes the system easy to modify for future performances.
-
----
-
-## Possible Future Development
-
-Potential extensions include:
-
-- Multiple independent score layers
-- Per-player visualisation
-- Dynamic annotations
-- Cue markers
-- Section labels
-- OSC output
-- MIDI output
-- Audio-event triggers
-- Per-device score variants
-- Multiple simultaneous masters/sessions
-- Persistent score annotations
-- Automatic VLC playlist management
-- More precise network clock synchronisation
-
-These are not currently required for the basic prototype.
-
----
-
-## Credits
-
-Developed as a research/performance tool for work with Dziga Vertov's *Man with a Movie Camera* (1929).
-
-The system is intended to support experimental approaches to film scoring in which musical structure, visual montage and temporal relationships can be represented directly within a shared graphical timeline.
