@@ -16,7 +16,7 @@ const VLC_PASSWORD =
   process.env.VLC_PASSWORD || 'change-me';
 
 const POLL_MS =
-  Number(process.env.POLL_MS || 100);
+  Number(process.env.POLL_MS || 41);
 
 
 // ------------------------------------------------------------
@@ -263,18 +263,36 @@ async function pollVlc() {
     const state =
       normaliseStatus(vlcState);
 
-    lastState =
-      state;
+    /*
+ * Only broadcast when the VLC timing state
+ * has actually changed.
+ */
 
-    broadcast({
+const changed =
+  state.time !== lastState.time ||
+  state.playing !== lastState.playing ||
+  state.length !== lastState.length ||
+  state.rate !== lastState.rate ||
+  state.title !== lastState.title ||
+  state.connectedToVlc !== lastState.connectedToVlc;
 
-      type: 'state',
 
-      ...state,
+lastState =
+  state;
 
-      masterConnected:
-        Boolean(master)
-    });
+
+if (changed) {
+
+  broadcast({
+
+    type: 'state',
+
+    ...state,
+
+    masterConnected:
+      Boolean(master)
+  });
+}
 
   } catch (err) {
 

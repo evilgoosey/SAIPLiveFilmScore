@@ -1,4 +1,5 @@
 <!doctype html>
+
 <html lang="en">
 
 <head>
@@ -133,53 +134,55 @@
       color: #9be7a5 !important;
     }
   </style>
+
 </head>
 
 <body>
 
   <div id="app">
 
-    <div id="scoreViewport">
+```
+<div id="scoreViewport">
 
-      <img id="score" src="score.png" alt="Graphic score">
+  <img id="score" src="scorex4.png" alt="Graphic score">
 
-      <div id="playhead"></div>
+  <div id="playhead"></div>
 
-    </div>
+</div>
 
 
-    <div id="ui">
+<div id="ui">
 
-      <span id="role">
-        PLAYER
-      </span>
+  <span id="role">
+    PLAYER
+  </span>
 
-      <button id="play" disabled>
-        PLAY
-      </button>
+  <button id="play" disabled>
+    PLAY
+  </button>
 
-      <button id="pause" disabled>
-        PAUSE
-      </button>
+  <button id="pause" disabled>
+    PAUSE
+  </button>
 
-      <button id="stop" disabled>
-        STOP
-      </button>
+  <button id="stop" disabled>
+    STOP
+  </button>
 
-      <input id="seek" type="range" min="0" max="0" step="1" value="0" disabled aria-label="Movie position">
+  <input id="seek" type="range" min="0" max="0" step="1" value="0" disabled aria-label="Movie position">
 
-      <span id="time">
-        00:00.000
-      </span>
+  <span id="time">
+    00:00.000
+  </span>
 
-      <span id="status">
-        Connecting…
-      </span>
+  <span id="status">
+    Connecting…
+  </span>
 
-    </div>
+</div>
+```
 
   </div>
-
 
   <script>
 
@@ -193,19 +196,16 @@
       Canonical score coordinate system.
 
       Score:
-        16076 × 730 px
+        64304 × 730 px
 
       Film:
         4019 seconds
 
-      Therefore:
-        4019 × 4 = 16076
-
-      So:
-        scoreX = movieTime × 4
+      The current artwork is scorex4.png, horizontal coordinate scale is 16 pixels per second.
+     
     */
 
-    const PIXELS_PER_SECOND = 4;
+    const PIXELS_PER_SECOND = 16;
 
 
     /*
@@ -326,19 +326,6 @@
 
 
     /*
-      Last position actually rendered.
-
-      Used only to prevent tiny backwards movements caused by
-      timing jitter in VLC/server updates.
-
-      Deliberate seeks reset this naturally because the browser
-      receives the new VLC time.
-    */
-
-    let lastRenderedTime = 0;
-
-
-    /*
       ============================================================
       ROLE
       ============================================================
@@ -426,35 +413,12 @@
         );
 
 
-      /*
-        Optional:
-        While playing, never allow a tiny timing correction from
-        VLC to make the score move backwards.
-      */
-      
-          /*delte line to enable "prevent backwards". Probably only relevant on performance day
-
-      if (state.playing) {
-
-        t =
-          Math.max(
-            t,
-            lastRenderedTime
-          );
-      }
-
-      lastRenderedTime =
-        t;
-
-          */
-
       const movieTime =
         Math.max(
           0,
           Number(t) || 0
         );
 
-      
 
       /*
         Convert movie time into canonical score coordinates.
@@ -661,13 +625,16 @@
 
         ) {
 
-          /*console.log(
-            'STATE FROM SERVER:',
-            'time=', msg.time,
-            'vlcTime=', msg.vlcTime,
-            'position=', msg.position,
-            'length=', msg.length
-          );*/
+          console.log(
+            'STATE:',
+            'position=', Number(msg.position).toFixed(9),
+            'time=', Number(msg.time).toFixed(9),
+            'position×length=',
+            (
+              Number(msg.position) *
+              Number(msg.length)
+            ).toFixed(9)
+          );
 
 
           /*
@@ -838,6 +805,10 @@
 
         /*
           Pause while scrubbing.
+
+          The animation loop will now use the slider value
+          directly, so the timer and score continue moving
+          even though VLC is paused.
         */
 
         if (
@@ -848,6 +819,17 @@
             'pause'
           );
         }
+
+
+        /*
+          Immediately render the current slider position.
+        */
+
+        render(
+          Number(
+            seek.value
+          )
+        );
       }
     );
 
@@ -865,15 +847,20 @@
 
 
         /*
-          Slider value is an absolute number of seconds.
+          During scrubbing, the slider itself is the clock.
+
+          Do not wait for VLC to respond.
         */
 
-        timeLabel.textContent =
-          fmt(
-            Number(
-              seek.value
-            )
+        const requestedTime =
+          Number(
+            seek.value
           );
+
+
+        render(
+          requestedTime
+        );
       }
     );
 
@@ -903,12 +890,16 @@
         );
 
 
+        /*
+          Stop treating the slider as the temporary clock.
+        */
+
         sliderDragging =
           false;
 
 
         /*
-          Seek VLC using absolute seconds.
+          Seek VLC using the final slider position.
         */
 
         command(
@@ -920,9 +911,10 @@
         );
 
 
-
-
-       
+        /*
+          Resume playback if the movie was playing when
+          scrubbing began.
+        */
 
         if (
           sliderWasPlaying
@@ -932,14 +924,16 @@
             'play'
           );
         }
+
+
+        sliderWasPlaying =
+          false;
+
+
         /*
           Render the requested position immediately so the score
           responds without waiting for the next VLC packet.
         */
-
-        lastRenderedTime =
-          requestedTime;
-
 
         render(
           requestedTime
@@ -994,6 +988,44 @@
     function animate() {
 
       /*
+        ----------------------------------------------------------
+        SCRUB MODE
+        ----------------------------------------------------------
+
+        While the user is dragging the slider, VLC is paused.
+
+        The slider therefore becomes the temporary clock.
+
+        This is important because waiting for VLC to acknowledge
+        every slider movement would make the timer lag behind
+        the user's finger.
+      */
+
+      if (
+        sliderDragging
+      ) {
+
+        render(
+          Number(
+            seek.value
+          )
+        );
+
+
+        requestAnimationFrame(
+          animate
+        );
+
+
+        return;
+      }
+
+
+      /*
+        ----------------------------------------------------------
+        NORMAL PLAYBACK MODE
+        ----------------------------------------------------------
+
         Time since the most recent VLC/server packet.
       */
 
@@ -1005,35 +1037,58 @@
 
 
       /*
-        Predict the current movie time.
+        Predict VLC's normalised position.
 
-        VLC/server provides the anchor.
-        requestAnimationFrame provides the smooth movement.
+        VLC position is 0.0 → 1.0.
+
+        Playback rate is expressed as a multiplier of normal
+        playback speed, so convert elapsed seconds into the
+        equivalent fraction of the movie duration.
       */
 
-      const predicted =
-        state.playing
+      let predictedPosition =
+        state.position;
 
-          ? state.time +
-          elapsed *
-          (state.rate || 1)
+      if (
+        state.playing &&
+        state.length > 0
+      ) {
 
-          : state.time;
+        predictedPosition =
+          state.position +
+          (
+            elapsed *
+            (state.rate || 1)
+          ) /
+          state.length;
+      }
 
 
       /*
-        Never render beyond the known movie duration.
+        Clamp VLC position to the valid range.
       */
 
-      const displayTime =
-        state.length
-
-          ? Math.min(
-            state.length,
-            predicted
+      predictedPosition =
+        Math.max(
+          0,
+          Math.min(
+            1,
+            predictedPosition
           )
+        );
 
-          : predicted;
+
+      /*
+        Convert the predicted VLC position back into seconds.
+
+        This deliberately uses the same calculation as the server:
+
+            position × length
+      */
+
+      const predicted =
+        predictedPosition *
+        state.length;
 
 
       /*
@@ -1041,7 +1096,7 @@
       */
 
       render(
-        displayTime
+        predicted
       );
 
 
